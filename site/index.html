@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Catal-Log — Site de démo CI/CD</title>
+  <style>
+    /* ── Reset & base ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    /* ── Card principale ── */
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 1rem;
+      padding: 2.5rem 3rem;
+      max-width: 600px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+    }
+
+    /* ── Logo / badge CI/CD ── */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: #0ea5e9;
+      color: #fff;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 0.35rem 0.9rem;
+      border-radius: 999px;
+      margin-bottom: 1.5rem;
+    }
+    .badge::before { content: "●"; font-size: 0.6rem; animation: blink 1.5s infinite; }
+    @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.2; } }
+
+    h1 {
+      font-size: 2rem;
+      font-weight: 800;
+      color: #f1f5f9;
+      margin-bottom: 0.5rem;
+    }
+    h1 span { color: #38bdf8; }
+
+    .subtitle {
+      color: #94a3b8;
+      font-size: 1rem;
+      margin-bottom: 2rem;
+      line-height: 1.6;
+    }
+
+    /* ── Grille d'infos ── */
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+      margin-bottom: 2rem;
+    }
+    .info-item {
+      background: #0f172a;
+      border: 1px solid #1e3a5f;
+      border-radius: 0.5rem;
+      padding: 0.8rem 1rem;
+      text-align: left;
+    }
+    .info-item .label {
+      font-size: 0.7rem;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 0.25rem;
+    }
+    .info-item .value {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: #38bdf8;
+      font-family: 'Courier New', monospace;
+    }
+
+    /* ── Pipeline steps ── */
+    .pipeline {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.25rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.5rem;
+    }
+    .step {
+      background: #064e3b;
+      color: #6ee7b7;
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 0.3rem 0.7rem;
+      border-radius: 0.3rem;
+    }
+    .arrow { color: #475569; font-size: 0.9rem; }
+
+    /* ── Footer ── */
+    footer {
+      margin-top: 1.5rem;
+      font-size: 0.75rem;
+      color: #475569;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">Pipeline actif</div>
+    <h1>Catal-<span>Log</span></h1>
+    <p class="subtitle">
+      Site statique servi par <strong>Nginx</strong>, construit et déployé
+      automatiquement via <strong>GitHub Actions</strong> et publié dans
+      <strong>GHCR</strong>.
+    </p>
+
+    <!-- Infos injectées statiquement — elles correspondent à version.json -->
+    <div class="info-grid">
+      <div class="info-item">
+        <div class="label">Version</div>
+        <div class="value" id="version">1.0.0</div>
+      </div>
+      <div class="info-item">
+        <div class="label">Environnement</div>
+        <div class="value" id="env">recette</div>
+      </div>
+      <div class="info-item">
+        <div class="label">Auteur</div>
+        <div class="value" id="author">Laurent Vidot</div>
+      </div>
+      <div class="info-item">
+        <div class="label">Module</div>
+        <div class="value">EC06 – ASRC</div>
+      </div>
+    </div>
+
+    <!-- Pipeline visuel -->
+    <div class="pipeline">
+      <span class="step">✓ CI</span>
+      <span class="arrow">→</span>
+      <span class="step">✓ Build</span>
+      <span class="arrow">→</span>
+      <span class="step">✓ Test</span>
+      <span class="arrow">→</span>
+      <span class="step">✓ GHCR</span>
+      <span class="arrow">→</span>
+      <span class="step">✓ Recette</span>
+      <span class="arrow">→</span>
+      <span class="step">⏳ Prod</span>
+    </div>
+
+    <footer>
+      Image Docker · Nginx Alpine · GitHub Container Registry
+    </footer>
+  </div>
+
+  <script>
+    // Charge version.json pour afficher les vraies métadonnées
+    fetch('/version.json')
+      .then(r => r.json())
+      .then(d => {
+        document.getElementById('version').textContent = d.version  || '1.0.0';
+        document.getElementById('env').textContent     = d.env      || 'recette';
+        document.getElementById('author').textContent  = d.author   || 'Laurent Vidot';
+      })
+      .catch(() => { /* valeurs par défaut déjà affichées */ });
+  </script>
+</body>
+</html>

@@ -1,0 +1,126 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 01-ci.yml — Intégration Continue (CI)
+#
+# Déclencheurs :
+#   - Tout push sur main ou develop
+#   - Toute Pull Request ciblant main
+#
+# Étapes :
+#   1. Lint du Dockerfile avec Hadolint (détecte les mauvaises pratiques)
+#   2. Build de l'image Docker localement (sans push)
+#   3. Lancement du conteneur en arrière-plan
+#   4. Test HTTP automatisé : vérifie que Nginx répond bien HTTP 200
+#   5. Nettoyage du conteneur
+#
+# Pourquoi ne pas pousser ici ?
+#   Ce workflow valide le code. La publication dans GHCR est le rôle de
+#   02-publish-ghcr.yml, déclenché séparément. Séparation des responsabilités.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: 01 – CI (lint, build, test)
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  ci:
+    name: Lint · Build · Test
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Récupération du code source ────────────────────────────────────
+      - name: Checkout du dépôt
+        uses: actions/checkout@v4
+
+      # ── 2. Lint du Dockerfile avec Hadolint ───────────────────────────────
+      # Hadolint analyse le Dockerfile et signale les instructions qui ne
+      # respectent pas les bonnes pratiques (ex : pas de version fixée, RUN
+      # enchaînés sans &&, etc.).
+      - name: Lint Dockerfile (Hadolint)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+          # DL3018 : version de paquet non fixée (non pertinent pour nginx:alpine
+          # qui n'installe rien via apk dans notre cas)
+          ignore: DL3018
+
+      # ── 3. Build de l'image Docker ────────────────────────────────────────
+      # On injecte les métadonnées via --build-arg pour remplir les labels OCI
+      # définis dans le Dockerfile.
+      - name: Build de l'image Docker
+        run: |
+          docker build \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --build-arg VERSION="ci-${{ github.run_number }}" \
+            --build-arg GIT_COMMIT="${{ github.sha }}" \
+            --tag catal-log:ci-test \
+            .
+
+      # ── 4. Lancement du conteneur en arrière-plan ─────────────────────────
+      - name: Démarrage du conteneur de test
+        run: |
+          docker run --detach \
+            --name catal-log-test \
+            --publish 8080:80 \
+            catal-log:ci-test
+
+          # On attend que Nginx soit prêt (max 15 secondes)
+          echo "Attente du démarrage de Nginx..."
+          for i in $(seq 1 15); do
+            if curl --silent --fail http://localhost:8080 > /dev/null 2>&1; then
+              echo "✅ Nginx est prêt après ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+      # ── 5. Test HTTP automatisé ───────────────────────────────────────────
+      # Vérifications :
+      #   a) Code HTTP 200 sur la page d'accueil
+      #   b) Présence de "Catal-Log" dans le body (contenu attendu)
+      #   c) Code HTTP 200 sur version.json (preuve que le fichier est bien servi)
+      - name: Test HTTP – page d'accueil (HTTP 200)
+        run: |
+          STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" http://localhost:8080)
+          echo "Code HTTP reçu : ${STATUS}"
+          if [ "${STATUS}" != "200" ]; then
+            echo "❌ Attendu 200, reçu ${STATUS}"
+            exit 1
+          fi
+          echo "✅ HTTP 200 OK"
+
+      - name: Test HTTP – contenu de la page
+        run: |
+          BODY=$(curl --silent http://localhost:8080)
+          if echo "${BODY}" | grep -q "Catal-Log"; then
+            echo "✅ Contenu 'Catal-Log' trouvé dans la réponse"
+          else
+            echo "❌ Contenu 'Catal-Log' absent de la réponse"
+            exit 1
+          fi
+
+      - name: Test HTTP – version.json (HTTP 200)
+        run: |
+          STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" http://localhost:8080/version.json)
+          echo "Code HTTP version.json : ${STATUS}"
+          if [ "${STATUS}" != "200" ]; then
+            echo "❌ version.json non accessible (reçu ${STATUS})"
+            exit 1
+          fi
+          echo "✅ version.json accessible"
+
+      # ── 6. Nettoyage ──────────────────────────────────────────────────────
+      # Toujours exécuté, même en cas d'échec des tests précédents.
+      - name: Nettoyage du conteneur de test
+        if: always()
+        run: |
+          docker stop catal-log-test || true
+          docker rm catal-log-test   || true
+          docker rmi catal-log:ci-test || true
+          echo "✅ Nettoyage terminé"

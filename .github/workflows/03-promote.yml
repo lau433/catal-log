@@ -1,0 +1,176 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 03-promote.yml — Promotion manuelle Recette → Production simulée
+#
+# Déclencheur :
+#   workflow_dispatch UNIQUEMENT — c'est-à-dire un clic humain dans l'onglet
+#   GitHub Actions. Aucune automatisation : la promotion en production est
+#   toujours une décision consciente.
+#
+# Principe fondamental — Promotion sans rebuild :
+#   On ne reconstruit PAS l'image. On retag l'image déjà validée en recette
+#   avec le tag "production-simulee". Le digest SHA256 ne change pas.
+#   Ce qu'on a testé en recette est EXACTEMENT ce qui va en production.
+#
+#   Analogie : c'est comme apposer un tampon "APPROUVÉ PRODUCTION" sur un
+#   document déjà validé, sans en faire une nouvelle photocopie.
+#
+# Pourquoi c'est important ?
+#   Un rebuild introduirait un risque : même avec le même Dockerfile et le
+#   même commit, les dépendances externes (base image nginx:alpine, etc.)
+#   pourraient avoir changé entre les deux builds. Le digest garantit
+#   l'immutabilité totale.
+#
+# Environnements GitHub simulés :
+#   - recette         : environnement de validation (pas de protection)
+#   - production-simulee : environnement cible (peut avoir une règle d'approbation)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: 03 – Promote (Recette → Production simulée)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Tag de l'image à promouvoir (ex : v1.0.0 ou sha-a1b2c3d)"
+        required: true
+        default: "latest"
+        type: string
+      digest:
+        description: "Digest SHA256 de l'image (optionnel — pour traçabilité)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # ── Étape 1 : Validation en environnement recette ─────────────────────────
+  validate-recette:
+    name: Validation Recette
+    runs-on: ubuntu-latest
+    environment: recette   # ← Environnement GitHub simulé "recette"
+
+    steps:
+      - name: Connexion à GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Vérification que l'image demandée existe bien dans GHCR
+      - name: Vérification de l'existence de l'image en recette
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/catal-log:${{ inputs.image_tag }}"
+          echo "🔍 Vérification de l'image : ${IMAGE}"
+
+          if docker pull "${IMAGE}"; then
+            echo "✅ Image trouvée dans GHCR"
+            # Affichage du digest réel de l'image
+            REAL_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${IMAGE}" 2>/dev/null || echo "N/A")
+            echo "📋 Digest réel : ${REAL_DIGEST}"
+
+            if [ -n "${{ inputs.digest }}" ]; then
+              echo "📋 Digest fourni : ${{ inputs.digest }}"
+            fi
+          else
+            echo "❌ Image introuvable : ${IMAGE}"
+            exit 1
+          fi
+
+      # Test fonctionnel rapide en recette : on lance le conteneur et on
+      # vérifie qu'il répond correctement avant de promouvoir.
+      - name: Test fonctionnel rapide (smoke test recette)
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/catal-log:${{ inputs.image_tag }}"
+
+          docker run --detach \
+            --name recette-smoke-test \
+            --publish 8081:80 \
+            "${IMAGE}"
+
+          sleep 3
+
+          STATUS=$(curl --silent --output /dev/null --write-out "%{http_code}" http://localhost:8081 || echo "000")
+          echo "Code HTTP recette : ${STATUS}"
+
+          docker stop recette-smoke-test && docker rm recette-smoke-test
+
+          if [ "${STATUS}" != "200" ]; then
+            echo "❌ Smoke test recette échoué (HTTP ${STATUS}) — promotion annulée"
+            exit 1
+          fi
+          echo "✅ Smoke test recette réussi — prêt pour la promotion"
+
+      - name: Résumé validation recette
+        run: |
+          echo "## ✅ Recette validée" >> $GITHUB_STEP_SUMMARY
+          echo "Image \`${{ inputs.image_tag }}\` validée en recette." >> $GITHUB_STEP_SUMMARY
+          echo "Promotion vers **production-simulee** en cours..." >> $GITHUB_STEP_SUMMARY
+
+  # ── Étape 2 : Promotion vers production-simulée ───────────────────────────
+  promote-production:
+    name: Promotion Production simulée
+    runs-on: ubuntu-latest
+    needs: validate-recette          # ne s'exécute que si recette est OK
+    environment: production-simulee  # ← Environnement GitHub simulé "production-simulee"
+
+    steps:
+      - name: Connexion à GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # On installe crane pour retagger sans télécharger/re-uploader l'image.
+      # crane copie uniquement le manifest (quelques Ko) — pas les layers (~8 Mo).
+      # Le digest SHA256 reste identique : c'est la garantie d'immutabilité.
+      - name: Installation de crane (outil de retag sans rebuild)
+        run: |
+          curl -sL "https://github.com/google/go-containerregistry/releases/download/v0.19.1/go-containerregistry_Linux_x86_64.tar.gz" \
+            | tar -xz crane
+          sudo mv crane /usr/local/bin/crane
+          crane version
+
+      # Retag de l'image recette → production-simulee
+      # L'opération est atomique et ne modifie pas le contenu de l'image.
+      - name: Promotion de l'artefact (retag sans rebuild)
+        run: |
+          SOURCE="ghcr.io/${{ github.repository_owner }}/catal-log:${{ inputs.image_tag }}"
+          TARGET="ghcr.io/${{ github.repository_owner }}/catal-log:production-simulee"
+
+          echo "🚀 Promotion : ${SOURCE} → ${TARGET}"
+          crane tag "${SOURCE}" production-simulee
+          echo "✅ Tag 'production-simulee' appliqué avec succès"
+
+      # Vérification post-promotion : le digest du tag production-simulee
+      # doit être identique à celui du tag source.
+      - name: Vérification du digest post-promotion
+        run: |
+          SOURCE_DIGEST=$(crane digest "ghcr.io/${{ github.repository_owner }}/catal-log:${{ inputs.image_tag }}")
+          PROD_DIGEST=$(crane digest "ghcr.io/${{ github.repository_owner }}/catal-log:production-simulee")
+
+          echo "Digest source     : ${SOURCE_DIGEST}"
+          echo "Digest production : ${PROD_DIGEST}"
+
+          if [ "${SOURCE_DIGEST}" = "${PROD_DIGEST}" ]; then
+            echo "✅ Digests identiques — même artefact, zéro rebuild"
+          else
+            echo "❌ Digests différents — anomalie détectée"
+            exit 1
+          fi
+
+      - name: Résumé promotion
+        run: |
+          echo "## 🚀 Promotion réussie" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Champ | Valeur |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Source** | \`${{ inputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Cible** | \`production-simulee\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Rebuild** | ❌ Aucun — même artefact |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Déclencheur** | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Date** | $(date -u +%Y-%m-%dT%H:%M:%SZ) |" >> $GITHUB_STEP_SUMMARY

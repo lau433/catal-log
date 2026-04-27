@@ -1,0 +1,120 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 02-publish-ghcr.yml — Publication dans GitHub Container Registry (GHCR)
+#
+# Déclencheurs :
+#   - Push d'un tag Git de type v* (ex : v1.0.0, v1.2.3)
+#   - Déclenchement manuel (workflow_dispatch) pour les tests
+#
+# Ce workflow :
+#   1. Build l'image avec les métadonnées OCI complètes
+#   2. Génère automatiquement les tags (semver, sha court, latest)
+#   3. Pousse l'image dans GHCR
+#   4. Extrait et affiche le digest SHA256 de l'image publiée
+#
+# Concept clé — Tag vs Digest :
+#   - Un TAG (ex : v1.0.0) est une étiquette mutable : on peut la déplacer.
+#   - Un DIGEST (sha256:abc123…) est l'empreinte immuable du contenu exact
+#     de l'image. C'est lui qui garantit qu'on déploie exactement ce qui a
+#     été validé, sans surprise.
+#
+# Sécurité — GITHUB_TOKEN :
+#   GitHub Actions génère automatiquement ce token temporaire pour chaque run.
+#   Il n'est jamais stocké dans le code. Il expire à la fin du workflow.
+#   Permissions minimales : contents:read + packages:write uniquement.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: 02 – Publish GHCR
+
+on:
+  push:
+    tags:
+      - 'v*'           # déclenche sur v1.0.0, v1.2.3, etc.
+  workflow_dispatch:   # déclenchement manuel depuis l'onglet Actions
+
+# Permissions minimales — principe du moindre privilège
+permissions:
+  contents: read    # lire le code source
+  packages: write   # pousser dans GHCR
+
+jobs:
+  publish:
+    name: Build · Tag · Push GHCR
+    runs-on: ubuntu-latest
+
+    # On expose le digest en output pour pouvoir l'utiliser dans 03-promote.yml
+    outputs:
+      image-digest: ${{ steps.build-push.outputs.digest }}
+      image-tags:   ${{ steps.meta.outputs.tags }}
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout du dépôt
+        uses: actions/checkout@v4
+
+      # ── 2. Authentification GHCR ──────────────────────────────────────────
+      # On utilise le GITHUB_TOKEN injecté automatiquement par GitHub Actions.
+      # Aucun secret à créer manuellement — c'est la bonne pratique.
+      - name: Connexion à GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 3. Génération automatique des tags et labels OCI ──────────────────
+      # docker/metadata-action calcule les tags selon les conventions semver :
+      #   - Sur tag v1.2.3 : ghcr.io/user/catal-log:1.2.3, :1.2, :1, :latest
+      #   - Sur workflow_dispatch : ghcr.io/user/catal-log:sha-a1b2c3d
+      - name: Extraction des métadonnées (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/catal-log
+          tags: |
+            # Tag semver complet (ex : 1.2.3)
+            type=semver,pattern={{version}}
+            # Tag majeur.mineur (ex : 1.2)
+            type=semver,pattern={{major}}.{{minor}}
+            # Tag SHA court (ex : sha-a1b2c3d) — toujours présent
+            type=sha,prefix=sha-,format=short
+            # latest uniquement sur le tag semver (pas sur les branches)
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          labels: |
+            org.opencontainers.image.title=catal-log
+            org.opencontainers.image.description=Site statique Catal-Log – EC06 ASRC
+            org.opencontainers.image.vendor=Laurent Vidot
+
+      # ── 4. Build et push vers GHCR ────────────────────────────────────────
+      # On injecte les build-args pour remplir les ARG du Dockerfile.
+      # L'action retourne le digest SHA256 dans outputs.digest.
+      - name: Build et push de l'image
+        id: build-push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+            VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+            GIT_COMMIT=${{ github.sha }}
+
+      # ── 5. Affichage du digest (preuve de publication) ────────────────────
+      # Le digest est l'empreinte SHA256 immuable de l'image publiée.
+      # C'est cette valeur qu'on utilisera dans 03-promote.yml pour garantir
+      # qu'on promeut exactement l'image validée en recette.
+      - name: Résumé — tag et digest publiés
+        run: |
+          echo "## 📦 Image publiée dans GHCR" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Champ | Valeur |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Tags** | \`${{ steps.meta.outputs.tags }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Digest** | \`${{ steps.build-push.outputs.digest }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Image complète avec digest :" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "ghcr.io/${{ github.repository_owner }}/catal-log@${{ steps.build-push.outputs.digest }}" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

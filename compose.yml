@@ -1,0 +1,107 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# compose.yml — Orchestration légère Catal-Log / EC06
+#
+# Rôle de ce fichier :
+#   Docker Compose est un orchestrateur LÉGER pour environnements locaux ou de
+#   développement. Il décrit les services, leurs dépendances, les ports et les
+#   volumes dans un fichier déclaratif. C'est l'outil idéal pour simuler une
+#   architecture multi-services sans infrastructure cloud.
+#
+# Services :
+#   - web    : site statique Catal-Log servi par Nginx
+#   - whoami : second service de diagnostic (retourne les infos du conteneur)
+#              → démontre la coordination multi-conteneurs
+#
+# Simulation de scaling (si Docker est disponible localement) :
+#   docker compose up --scale web=2
+#   Cela lance 2 instances du service web. Les ports doivent alors être gérés
+#   dynamiquement (pas de port fixe dans ce cas — voir commentaire ci-dessous).
+#
+# Limites de cette approche vs production réelle :
+#   - Pas de load balancer automatique entre les réplicas
+#   - Pas de gestion de l'état partagé entre instances
+#   - Pas de rolling update (arrêt/redémarrage brutal)
+#   - Fonctionne sur un seul hôte (pas de distribution multi-nœuds)
+#   → Kubernetes (ou Swarm) est nécessaire pour une vraie orchestration prod.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Service principal : site statique Catal-Log ──────────────────────────
+  web:
+    # On référence l'image publiée dans GHCR.
+    # En local, remplacer par "catal-log:latest" après un docker build.
+    image: ghcr.io/${GITHUB_REPOSITORY_OWNER:-votre-username}/catal-log:${IMAGE_TAG:-latest}
+    container_name: catal-log-web
+    restart: unless-stopped
+
+    # Port exposé sur l'hôte.
+    # IMPORTANT pour le scaling : si on lance --scale web=2, Docker Compose
+    # refusera deux conteneurs sur le même port hôte. Pour scaler, commenter
+    # la ligne "ports" et utiliser un reverse proxy ou laisser Docker assigner
+    # des ports dynamiques.
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+    # Healthcheck : Docker surveille la santé du conteneur toutes les 30s.
+    # Si le conteneur est "unhealthy", Docker peut le redémarrer automatiquement.
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    networks:
+      - catal-log-net
+
+    # Labels pour la traçabilité (visibles dans "docker inspect")
+    labels:
+      com.catal-log.role: "web"
+      com.catal-log.module: "EC06"
+      com.catal-log.env: "${ENV:-recette}"
+
+  # ── Second service : whoami (diagnostic / démo multi-conteneurs) ──────────
+  # traefik/whoami est une image légère qui retourne les infos du conteneur
+  # (hostname, IP, headers HTTP reçus) quand on l'appelle en HTTP.
+  # Intérêt pédagogique :
+  #   - Démontre qu'on peut coordonner plusieurs conteneurs dans le même réseau
+  #   - Quand on scale (--scale web=2), le whoami permet de voir les différents
+  #     hostnames des réplicas → illustre la distribution de charge
+  whoami:
+    image: traefik/whoami:latest
+    container_name: catal-log-whoami
+    restart: unless-stopped
+    ports:
+      - "${WHOAMI_PORT:-8081}:80"
+    networks:
+      - catal-log-net
+    labels:
+      com.catal-log.role: "diagnostic"
+      com.catal-log.module: "EC06"
+
+# ── Réseau dédié ──────────────────────────────────────────────────────────────
+# Les deux services communiquent sur ce réseau interne isolé.
+# Depuis "web", on peut appeler "whoami" par son nom de service (DNS interne).
+networks:
+  catal-log-net:
+    driver: bridge
+    name: catal-log-network
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COMMANDES UTILES
+#
+# Lancement normal :
+#   docker compose up -d
+#
+# Simulation de scaling (2 instances web) :
+#   docker compose up -d --scale web=2
+#   (commenter la directive "ports" du service web au préalable)
+#
+# Vérification des services :
+#   docker compose ps
+#   docker compose logs web
+#
+# Arrêt et nettoyage :
+#   docker compose down
+# ─────────────────────────────────────────────────────────────────────────────

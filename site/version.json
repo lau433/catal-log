@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "author": "Laurent Vidot",
+  "module": "EC06",
+  "formation": "ASRC – RNCP39611",
+  "project": "Catal-Log",
+  "description": "Site statique servi par Nginx, pipeline CI/CD GitHub Actions",
+  "env": "recette",
+  "built_at": "2026-04-27T00:00:00Z"
+}
