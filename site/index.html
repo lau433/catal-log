@@ -141,7 +141,7 @@
       </div>
       <div class="info-item">
         <div class="label">Auteur</div>
-        <div class="value" id="author">Laurent Vidot</div>
+        <div class="value" id="author">anonyme7</div>
       </div>
       <div class="info-item">
         <div class="label">Module</div>
@@ -176,7 +176,7 @@
       .then(d => {
         document.getElementById('version').textContent = d.version  || '1.0.0';
         document.getElementById('env').textContent     = d.env      || 'recette';
-        document.getElementById('author').textContent  = d.author   || 'Laurent Vidot';
+        document.getElementById('author').textContent  = d.author   || 'anonyme7';
       })
       .catch(() => { /* valeurs par défaut déjà affichées */ });
   </script>
